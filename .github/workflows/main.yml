@@ -1,0 +1,31 @@
+name: PentAGI Automated Worker
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # প্রতি ১০ মিনিট পর পর অটোমেটিক রান হবে
+  workflow_dispatch:       # গিটহাব ড্যাশবোর্ড থেকে ম্যানুয়ালি রান করার অপশন রাখবে
+
+jobs:
+  run-worker-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run Worker Script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node worker.js
