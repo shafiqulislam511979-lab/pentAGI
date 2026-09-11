@@ -10,6 +10,7 @@
   "dependencies": {
     "@google/genai": "latest",
     "@supabase/supabase-js": "^2.39.0",
-    "firebase": "^10.8.0"
+    "firebase": "^10.8.0",
+    "ws": "^8.16.0"
   }
 }
