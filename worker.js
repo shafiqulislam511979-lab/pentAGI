@@ -37,11 +37,12 @@ const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 async function runWorker() {
   console.log("Starting PentAGI automated worker execution...");
 
-  // 1. Fetch pending reports from Supabase
-  const { error: updateError } = await supabase
-    .from('reports') // cyber_reports এর বদলে reports করা হলো
-    .update({ status: 'processed', analysis: analysisText })
-    .eq('id', report.id);
+  // 1. Fetch pending reports from Supabase (using 'reports' table)
+  const { data: reports, error } = await supabase
+    .from('reports')
+    .select('*')
+    .eq('status', 'pending')
+    .limit(5);
 
   if (error) {
     console.error("Error fetching reports from Supabase:", error.message);
@@ -69,7 +70,18 @@ async function runWorker() {
         contents: prompt,
       });
 
-      const analysisText = response.text || "No AI analysis generated.";
+      // Safe extraction of analysis text
+      let analysisText = "No AI analysis generated.";
+      if (response) {
+        if (typeof response.text === 'string') {
+          analysisText = response.text;
+        } else if (typeof response.text === 'function') {
+          analysisText = response.text();
+        } else if (response.candidates?.[0]?.content?.parts?.[0]?.text) {
+          analysisText = response.candidates[0].content.parts[0].text;
+        }
+      }
+
       console.log(`AI triage completed for report ID: ${report.id}`);
 
       // 3. Stage the analyzed data into Firebase Realtime Database
@@ -82,7 +94,7 @@ async function runWorker() {
 
       // 4. Update status in Supabase to processed
       const { error: updateError } = await supabase
-        .from('cyber_reports')
+        .from('reports')
         .update({ status: 'processed', analysis: analysisText })
         .eq('id', report.id);
 
