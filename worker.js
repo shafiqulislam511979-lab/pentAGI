@@ -1,127 +1,106 @@
+import ws from 'ws';
 import { createClient } from '@supabase/supabase-js';
 import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, set, remove } from 'firebase/database';
+import { getDatabase, ref, set } from 'firebase/database';
 import { GoogleGenAI } from '@google/genai';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
+// Environment variable validation
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const geminiApiKey = process.env.GEMINI_API_KEY;
 
-const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY,
-  authDomain: `${process.env.FIREBASE_PROJECT_ID}.firebaseapp.com`,
-  databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com`,
-  projectId: process.env.FIREBASE_PROJECT_ID,
-  storageBucket: `${process.env.FIREBASE_PROJECT_ID}.firebasestorage.app`,
-  messagingSenderId: process.env.FIREBASE_MSG_SENDER_ID || "1035835919494",
-  appId: process.env.FIREBASE_APP_ID,
-  measurementId: process.env.FIREBASE_MEASUREMENT_ID
-};
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-2.5-flash';
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getDatabase(firebaseApp);
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-
-async function runWorkerBatch() {
-  console.log("🔄 Starting PentAGI GitHub Action Batch Check...");
-  try {
-    const { data: reports, error } = await supabase
-      .from('reports')
-      .select('*')
-      .eq('status', 'pending');
-
-    if (error) throw error;
-
-    if (!reports || reports.length === 0) {
-      console.log("✅ No pending reports found. Exiting process.");
-      process.exit(0);
-    }
-
-    for (const report of reports) {
-      console.log(`[Sync] Processing report: ${report.tracking_code}`);
-      
-      await set(ref(db, `pentagi_reports/${report.id}`), {
-        ...report,
-        pentagi_status: 'processing',
-        migrated_at: new Date().toISOString()
-      });
-
-      await supabase
-        .from('reports')
-        .update({ status: 'AI Processing' })
-        .eq('id', report.id);
-
-      try {
-        const prompt = `
-        You are PentAGI, an autonomous cybersecurity and MFS fraud investigator. Analyze this incident report:
-        Category: ${report.category}
-        Description: ${report.description}
-        Loss: ${report.financial_loss || 0} BDT
-
-        Return a strict JSON format with:
-        - "threat_score" (number 1-10)
-        - "technical_summary" (string analysis and investigation brief)
-        - "requires_human_escalation" (boolean: true if autonomous resolution fails or high-risk manual human team intervention is required)
-        `;
-
-        const response = await ai.models.generateContent({
-          model: GEMINI_MODEL,
-          contents: prompt,
-          config: { responseMimeType: 'application/json' }
-        });
-
-        const result = JSON.parse(response.text);
-
-        if (result.requires_human_escalation) {
-          const targetStatus = report.category && report.category.toLowerCase().includes('mfs') 
-            ? 'MFS Team Working' 
-            : 'Cyber Security Team Working';
-
-          await supabase
-            .from('reports')
-            .update({
-              status: targetStatus,
-              technical_summary: result.technical_summary
-            })
-            .eq('id', report.id);
-
-          await remove(ref(db, `pentagi_reports/${report.id}`));
-          console.log(`[Escalated] ${report.tracking_code} sent to human team portal.`);
-        } else {
-          await supabase
-            .from('reports')
-            .update({ 
-              status: 'Completed', 
-              technical_summary: result.technical_summary 
-            })
-            .eq('id', report.id);
-
-          await remove(ref(db, `pentagi_reports/${report.id}`));
-          console.log(`[Resolved] ${report.tracking_code} resolved autonomously.`);
-        }
-
-      } catch (aiErr) {
-        console.error(`[AI Error] Failed for ${report.tracking_code}:`, aiErr.message);
-        await supabase
-          .from('reports')
-          .update({
-            status: 'Cyber Security Team Working',
-            technical_summary: 'AI Processing Exception / Manual review required.'
-          })
-          .eq('id', report.id);
-        await remove(ref(db, `pentagi_reports/${report.id}`));
-      }
-    }
-
-    console.log("🏁 Batch execution completed successfully.");
-    process.exit(0);
-  } catch (err) {
-    console.error('[Worker Error]:', err.message);
-    process.exit(1);
-  }
+if (!supabaseUrl || !supabaseKey) {
+  console.error("Error: SUPABASE_URL and SUPABASE_KEY must be provided.");
+  process.exit(1);
 }
 
-runWorkerBatch();
+// Initialize Supabase Client with ws transport for Node 20 compatibility
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: { persistSession: false },
+  realtime: { transport: ws }
+});
+
+// Initialize Firebase App & Realtime Database
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_API_KEY,
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  appId: process.env.FIREBASE_APP_ID,
+  databaseURL: process.env.FIREBASE_DATABASE_URL || `https://${process.env.FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com`
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getDatabase(firebaseApp);
+
+// Initialize Gemini AI Client
+const ai = new GoogleGenAI({ apiKey: geminiApiKey });
+
+async function runWorker() {
+  console.log("Starting PentAGI automated worker execution...");
+
+  // 1. Fetch pending reports from Supabase
+  const { data: reports, error } = await supabase
+    .from('cyber_reports')
+    .select('*')
+    .eq('status', 'pending')
+    .limit(5);
+
+  if (error) {
+    console.error("Error fetching reports from Supabase:", error.message);
+    process.exit(1);
+  }
+
+  if (!reports || reports.length === 0) {
+    console.log("No pending cyber incident reports found.");
+    return;
+  }
+
+  console.log(`Found ${reports.length} pending report(s) to process.`);
+
+  for (const report of reports) {
+    try {
+      console.log(`Processing incident report ID: ${report.id}`);
+
+      // 2. Perform AI Triage using Gemini 2.5 Flash
+      const prompt = `Analyze this cyber incident report and provide a risk severity rating (Low, Medium, High, Critical) along with brief triage and response recommendations:
+      Title: ${report.title || 'N/A'}
+      Description: ${report.description || report.details || 'N/A'}`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+
+      const analysisText = response.text || "No AI analysis generated.";
+      console.log(`AI triage completed for report ID: ${report.id}`);
+
+      // 3. Stage the analyzed data into Firebase Realtime Database
+      const stagedRef = ref(db, `staged_incidents/${report.id}`);
+      await set(stagedRef, {
+        ...report,
+        aiAnalysis: analysisText,
+        processedAt: new Date().toISOString()
+      });
+
+      // 4. Update status in Supabase to processed
+      const { error: updateError } = await supabase
+        .from('cyber_reports')
+        .update({ status: 'processed', analysis: analysisText })
+        .eq('id', report.id);
+
+      if (updateError) {
+        console.error(`Failed to update Supabase status for report ${report.id}:`, updateError.message);
+      } else {
+        console.log(`Successfully processed, staged, and updated report ID: ${report.id}`);
+      }
+    } catch (err) {
+      console.error(`Error processing report ${report.id}:`, err.message);
+    }
+  }
+
+  console.log("PentAGI worker execution cycle finished successfully.");
+}
+
+runWorker().catch(err => {
+  console.error("Fatal worker error:", err);
+  process.exit(1);
+});
