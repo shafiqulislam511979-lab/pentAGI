@@ -38,11 +38,10 @@ async function runWorker() {
   console.log("Starting PentAGI automated worker execution...");
 
   // 1. Fetch pending reports from Supabase
-  const { data: reports, error } = await supabase
-    .from('cyber_reports')
-    .select('*')
-    .eq('status', 'pending')
-    .limit(5);
+  const { error: updateError } = await supabase
+    .from('reports') // cyber_reports এর বদলে reports করা হলো
+    .update({ status: 'processed', analysis: analysisText })
+    .eq('id', report.id);
 
   if (error) {
     console.error("Error fetching reports from Supabase:", error.message);
